@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="学位英语 414 词学习、发音与间隔复习工具"
+    />
+    <meta name="theme-color" content="#eef3f1" />
+    <title>声词</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="主导航">
+        <a class="brand" href="#today" aria-label="返回今日学习">
+          <span class="brand-mark" aria-hidden="true">ˈ</span>
+          <span class="brand-copy">
+            <strong>声词</strong>
+            <span>学位英语词汇</span>
+          </span>
+        </a>
+
+        <nav class="desktop-nav" aria-label="页面">
+          <a class="nav-link" href="#today" data-view-link="today">
+            <span class="icon" data-icon="home"></span>
+            <span>今日学习</span>
+          </a>
+          <a class="nav-link" href="#review" data-view-link="review">
+            <span class="icon" data-icon="refresh"></span>
+            <span>复习</span>
+            <span class="nav-count" id="due-nav-count" hidden></span>
+          </a>
+          <a class="nav-link" href="#library" data-view-link="library">
+            <span class="icon" data-icon="book-open"></span>
+            <span>全部词汇</span>
+          </a>
+          <a class="nav-link" href="#settings" data-view-link="settings">
+            <span class="icon" data-icon="settings"></span>
+            <span>设置</span>
+          </a>
+        </nav>
+
+        <div class="sidebar-foot">
+          <div class="sidebar-countdown" id="sidebar-countdown"></div>
+          <p>词表 414 词<br />按完成推进</p>
+        </div>
+      </aside>
+
+      <div class="main-shell">
+        <header class="mobile-header">
+          <a class="brand brand-mobile" href="#today" aria-label="返回今日学习">
+            <span class="brand-mark" aria-hidden="true">ˈ</span>
+            <span class="brand-copy"><strong>声词</strong></span>
+          </a>
+          <div class="mobile-countdown" id="mobile-countdown"></div>
+        </header>
+
+        <main id="view-root" tabindex="-1"></main>
+      </div>
+    </div>
+
+    <nav class="mobile-nav" aria-label="页面">
+      <a class="mobile-nav-link" href="#today" data-view-link="today">
+        <span class="icon" data-icon="home"></span>
+        <span>今日</span>
+      </a>
+      <a class="mobile-nav-link" href="#review" data-view-link="review">
+        <span class="icon" data-icon="refresh"></span>
+        <span>复习</span>
+        <span class="mobile-due-dot" id="mobile-due-dot" hidden></span>
+      </a>
+      <a class="mobile-nav-link" href="#library" data-view-link="library">
+        <span class="icon" data-icon="book-open"></span>
+        <span>词汇</span>
+      </a>
+      <a class="mobile-nav-link" href="#settings" data-view-link="settings">
+        <span class="icon" data-icon="settings"></span>
+        <span>设置</span>
+      </a>
+    </nav>
+
+    <dialog class="word-dialog" id="word-dialog" aria-labelledby="word-dialog-title">
+      <div class="dialog-head">
+        <span class="dialog-kicker">词汇详情</span>
+        <button
+          class="icon-button"
+          type="button"
+          data-action="close-word-dialog"
+          aria-label="关闭词汇详情"
+          title="关闭"
+        >
+          <span class="icon" data-icon="x"></span>
+        </button>
+      </div>
+      <div id="word-dialog-content"></div>
+    </dialog>
+
+    <dialog class="confirm-dialog" id="confirm-dialog" aria-labelledby="confirm-title">
+      <h2 id="confirm-title">确认操作</h2>
+      <p id="confirm-message"></p>
+      <div class="dialog-actions">
+        <button class="button button-quiet" type="button" data-action="cancel-confirm">取消</button>
+        <button class="button button-danger" type="button" data-action="accept-confirm">确认</button>
+      </div>
+    </dialog>
+
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+    <noscript>
+      <p class="noscript-message">此页面需要启用 JavaScript 才能进行词汇学习。</p>
+    </noscript>
+
+    <script src="./srs.js" defer></script>
+    <script src="./words.js" defer></script>
+    <script src="./app.js" defer></script>
+  </body>
+</html>
