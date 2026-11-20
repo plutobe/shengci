@@ -185,18 +185,10 @@ dialog:focus-visible {
 }
 
 .brand-mark {
-  display: inline-flex;
+  display: block;
   width: 42px;
   height: 42px;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius);
-  background: var(--teal);
-  color: var(--mustard-pale);
-  font-family: var(--font-display);
-  font-size: 34px;
-  font-weight: 700;
-  line-height: 1;
+  flex: 0 0 42px;
   transform: translateY(-2px);
 }
 
@@ -2886,7 +2878,7 @@ dialog:focus-visible {
   .brand-mobile .brand-mark {
     width: 34px;
     height: 34px;
-    font-size: 27px;
+    flex-basis: 34px;
   }
 
   .brand-mobile .brand-copy strong {
