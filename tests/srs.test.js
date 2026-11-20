@@ -102,3 +102,27 @@ test("imported state is normalized to supported settings and word ids", () => {
   assert.equal(normalized.lastSummary.newCount, 0);
   assert.equal(normalized.lastSummary.reviewCount, 0);
 });
+
+test("legacy active sessions start reviews in spelling mode and keep card results", () => {
+  const normalized = Core.normalizeState(
+    {
+      activeSession: {
+        date: "2026-11-20",
+        phase: "review",
+        reviewIds: [1],
+        newIds: [],
+        reviewIndex: 0,
+        learnIndex: 0,
+        quizIndex: 0,
+        quiz: [],
+        answers: [{ wordId: 1, correct: false, phase: "review", cardIndex: 0 }],
+        cardResult: { wordId: 1, phase: "review", index: 0, correct: false, answer: "abandn" },
+      },
+    },
+    { now: "2026-11-20", totalWords: 414, totalRounds: 10 },
+  );
+  assert.equal(normalized.activeSession.cardMode, "spelling");
+  assert.equal(normalized.activeSession.cardResult.correct, false);
+  assert.equal(normalized.activeSession.cardResult.answer, "abandn");
+  assert.equal(normalized.activeSession.answers[0].cardIndex, 0);
+});

@@ -149,6 +149,26 @@
             correct: Boolean(item.correct),
           }))
       : [];
+    const cardMode = ["intro", "spelling"].includes(session.cardMode)
+      ? session.cardMode
+      : phase === "review"
+        ? "spelling"
+        : "intro";
+    const cardResult =
+      session.cardResult &&
+      Number.isInteger(Number(session.cardResult.wordId)) &&
+      Number(session.cardResult.wordId) >= 1 &&
+      Number(session.cardResult.wordId) <= totalWords
+        ? {
+            wordId: Number(session.cardResult.wordId),
+            phase: ["review", "learn"].includes(session.cardResult.phase)
+              ? session.cardResult.phase
+              : phase,
+            index: Math.max(0, Math.round(Number(session.cardResult.index) || 0)),
+            correct: Boolean(session.cardResult.correct),
+            answer: String(session.cardResult.answer || "").slice(0, 80),
+          }
+        : null;
     return {
       id: typeof session.id === "string" ? session.id : `session-${Date.now()}`,
       date: session.date,
@@ -160,6 +180,8 @@
       learnIndex: Math.max(0, Math.round(Number(session.learnIndex) || 0)),
       quizIndex: Math.max(0, Math.round(Number(session.quizIndex) || 0)),
       quiz,
+      cardMode,
+      cardResult,
       answers: Array.isArray(session.answers)
         ? session.answers
             .filter((answer) => answer && Number.isInteger(Number(answer.wordId)))
@@ -167,6 +189,7 @@
               wordId: Number(answer.wordId),
               correct: Boolean(answer.correct),
               phase: String(answer.phase || "quiz"),
+              cardIndex: Number.isInteger(answer.cardIndex) ? answer.cardIndex : null,
             }))
         : [],
       reviewOnly: Boolean(session.reviewOnly),

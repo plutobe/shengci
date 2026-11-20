@@ -37,7 +37,6 @@
     flame: '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 17c2.5 0 4.5-2.03 4.5-4.5 0-1.5-.5-2.5-1.5-4-1 1-1.5 2-1.5 3C12.5 8 11 5 7 2c.5 2-1 4-2 6a7.5 7.5 0 0 0 3.5 10"/>',
     headphones: '<path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5a9 9 0 0 1 18 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/>',
     "spell-check": '<path d="m6 16 6-12 6 12"/><path d="M8 12h8"/><path d="m16 20 2 2 4-4"/>',
-    eye: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
     "arrow-right": '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
     "chevron-left": '<path d="m15 18-6-6 6-6"/>',
     "chevron-right": '<path d="m9 18 6-6-6-6"/>',
@@ -129,7 +128,6 @@
   let confirmCallback = null;
   let lastFocusedElement = null;
   let lastAutoSpeakKey = "";
-  let revealedCardKey = "";
   let speechVoices = [];
   let storageAvailable = true;
 
@@ -945,9 +943,11 @@
     const active = state.activeSession;
     const phaseLabel = active.phase === "review" ? "到期复习" : active.phase === "learn" ? "新词学习" : "混合自测";
     const answeredQuiz = active.quiz.filter((item) => item.answered).length;
+    const answeredCard = active.cardResult ? 1 : 0;
     const completed =
       Math.min(active.reviewIndex, active.reviewIds.length) +
       Math.min(active.learnIndex, active.newIds.length) +
+      answeredCard +
       answeredQuiz;
     const total = active.reviewIds.length + active.newIds.length + active.quiz.length;
     const progress = progressPercent(completed, total);
@@ -995,7 +995,16 @@
       const ids = active.phase === "review" ? active.reviewIds : active.newIds;
       const index = active.phase === "review" ? active.reviewIndex : active.learnIndex;
       const wordId = ids[index];
-      maybeAutoSpeak(`${active.id}:${active.phase}:${index}`, wordId, "word");
+      if (!active.cardResult) {
+        maybeAutoSpeak(
+          `${active.id}:${active.phase}:${index}:${active.cardMode}`,
+          wordId,
+          "word",
+        );
+        if (active.cardMode === "spelling") {
+          window.setTimeout(() => document.getElementById("card-spelling-answer")?.focus(), 50);
+        }
+      }
     } else if (active.phase === "quiz") {
       const item = active.quiz[active.quizIndex];
       if (item && item.type === "listening") {
@@ -1012,9 +1021,13 @@
     if (!session) return;
     if (session.phase === "review" && session.reviewIndex >= session.reviewIds.length) {
       session.phase = session.newIds.length ? "learn" : "quiz";
+      session.cardMode = session.phase === "learn" ? "intro" : "spelling";
+      session.cardResult = null;
     }
     if (session.phase === "learn" && session.learnIndex >= session.newIds.length) {
       session.phase = "quiz";
+      session.cardMode = "intro";
+      session.cardResult = null;
     }
     if (session.phase === "quiz" && !session.quiz.length) prepareQuiz(session);
     if (session.phase === "quiz" && !session.quiz.length) finishSession();
@@ -1057,43 +1070,20 @@
 
   function renderWordCard(wordId, phase, index, total, session) {
     const word = getWord(wordId);
-    const card = state.cards[wordId];
-    const token = `${session.id}:${phase}:${index}:${wordId}`;
-    const revealed = revealedCardKey === token;
+    const resultMatches =
+      session.cardResult?.wordId === wordId &&
+      session.cardResult.phase === phase &&
+      session.cardResult.index === index;
+    if (resultMatches) return renderCardResult(wordId, phase, index, total, session);
+    if (session.cardMode === "spelling") {
+      return renderSpellingCard(wordId, phase, index, total);
+    }
+    return renderCardIntro(wordId, phase, index, total);
+  }
+
+  function renderCardIntro(wordId, phase, index, total) {
+    const word = getWord(wordId);
     const phaseName = phase === "review" ? "复习" : "新词";
-    const stageNote = card
-      ? `记忆阶段 ${card.stage} / 5 · ${formatDueLabel(card.due)}`
-      : "首次学习 · 回答后会进入第 1 阶段";
-    const hints = getMemoryHints(word);
-
-    const answerPanel = revealed
-      ? `<div class="answer-panel">
-          <p class="meaning-large">${escapeHTML(word.meaning)}</p>
-          <div class="memory-grid">
-            <div class="memory-block">
-              <span class="memory-label">词形线索</span>
-              <p class="memory-text">${hints.map(escapeHTML).join("；")}</p>
-            </div>
-            <div class="memory-block">
-              <span class="memory-label">发音记忆</span>
-              <p class="memory-text">ˈ 后的音节重读，ˌ 后有次重音。先听一遍，再跟读两遍。</p>
-            </div>
-          </div>
-          <p class="example-sentence" lang="en">${highlightSentence(word, word.sentence)}</p>
-          <p class="example-translation">${escapeHTML(word.translation)}</p>
-          <p class="forms-text">${escapeHTML(word.forms)}</p>
-          <p class="stage-note">${escapeHTML(stageNote)}</p>
-          <div class="response-actions">
-            <button class="button response-button is-forgot" type="button" data-action="rate-card" data-correct="false">${icon("rotate-ccw", 18)} 没记住</button>
-            <button class="button response-button is-remembered" type="button" data-action="rate-card" data-correct="true">${icon("check", 18)} 记住了</button>
-          </div>
-        </div>`
-      : `<div class="recall-prompt">
-          <p>先在心里说出中文释义。</p>
-          <small>想好后再查看答案，主动回忆比反复阅读更有效。</small>
-        </div>
-        <button class="button button-secondary reveal-button" type="button" data-action="reveal-card">${icon("eye", 18)} 显示释义</button>`;
-
     return `<article class="word-card" aria-label="${phaseName}词卡">
       <div class="word-card-head">
         <span class="word-card-index">${phaseName} ${index + 1} / ${total} · 第 ${wordId} 个</span>
@@ -1103,13 +1093,113 @@
             <span class="sound-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
             <span class="sound-label">单词</span>
           </button>
-          ${revealed ? `<button class="icon-button" type="button" data-action="speak-word" data-word-id="${wordId}" data-sentence="true" aria-label="朗读例句" title="朗读例句">${icon("headphones", 18)}</button>` : ""}
         </div>
       </div>
       <h2 class="${wordTitleClass(word.word)}" lang="en">${escapeHTML(word.word)}</h2>
       <div class="phonetic-display">${renderPhonetic(word.phonetic)}</div>
       <div><span class="word-pos-large">${escapeHTML(word.pos)}</span></div>
-      ${answerPanel}
+      <div class="recall-prompt">
+        <p>先听发音，观察单词拼写和音标。</p>
+        <small>下一步会隐藏英文，只根据发音和中文意思拼写。</small>
+      </div>
+      <button class="button button-secondary spelling-start-button" type="button" data-action="start-card-spelling">${icon("spell-check", 18)} 开始拼写</button>
+    </article>`;
+  }
+
+  function renderSpellingCard(wordId, phase, index, total) {
+    const word = getWord(wordId);
+    const phaseName = phase === "review" ? "复习" : "新词";
+    const letterCount = word.word.replace(/[^A-Za-z]/g, "").length;
+    return `<article class="word-card spelling-card" aria-label="${phaseName}拼写检查">
+      <div class="word-card-head">
+        <span class="word-card-index">${phaseName} ${index + 1} / ${total} · 听音拼写</span>
+        <button class="sound-button" type="button" data-action="speak-word" data-word-id="${wordId}" aria-label="播放发音" title="播放发音">
+          <span class="icon">${icon("volume-2", 18)}</span>
+          <span class="sound-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
+          <span class="sound-label">发音</span>
+        </button>
+      </div>
+      <div class="spelling-context">
+        <span class="quiz-kicker">拼写检查</span>
+        <h2 class="spelling-title">根据发音和中文意思拼写</h2>
+        <p class="meaning-large">${escapeHTML(word.meaning)}</p>
+        <div class="spelling-meta">
+          <span class="pos-tag">${escapeHTML(word.pos)}</span>
+          <span>${letterCount} 个字母</span>
+        </div>
+        <button class="button button-secondary spelling-play-button" type="button" data-action="speak-word" data-word-id="${wordId}">
+          ${icon("volume-2", 18)} 播放发音
+        </button>
+      </div>
+      <form class="spelling-form card-spelling-form" data-card-spelling-form>
+        <label class="sr-only" for="card-spelling-answer">输入英文拼写</label>
+        <input class="spelling-input" id="card-spelling-answer" name="answer" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入英文拼写" />
+        <button class="button button-primary button-wide" type="submit">${icon("check", 18)} 检查拼写</button>
+      </form>
+    </article>`;
+  }
+
+  function renderCardResult(wordId, phase, index, total, session) {
+    const word = getWord(wordId);
+    const result = session.cardResult;
+    const card = state.cards[wordId];
+    const phaseName = phase === "review" ? "复习" : "新词";
+    const stageNote = card
+      ? `记忆阶段 ${card.stage} / 5 · ${formatDueLabel(card.due)}`
+      : "本轮答案已记录";
+    const hints = getMemoryHints(word);
+    const isLastReview = phase === "review" && index >= session.reviewIds.length - 1;
+    const isLastLearn = phase === "learn" && index >= session.newIds.length - 1;
+    const nextLabel = isLastReview
+      ? session.newIds.length
+        ? "开始新词学习"
+        : "进入混合自测"
+      : isLastLearn
+        ? "进入混合自测"
+        : "下一个词";
+
+    return `<article class="word-card card-result-card" aria-label="${phaseName}拼写结果">
+      <div class="word-card-head">
+        <span class="word-card-index">${phaseName} ${index + 1} / ${total} · 拼写结果</span>
+        <div class="word-card-audio">
+          <button class="sound-button" type="button" data-action="speak-word" data-word-id="${wordId}" aria-label="朗读 ${escapeHTML(word.word)}" title="朗读单词">
+            <span class="icon">${icon("volume-2", 18)}</span>
+            <span class="sound-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
+            <span class="sound-label">单词</span>
+          </button>
+          <button class="icon-button" type="button" data-action="speak-word" data-word-id="${wordId}" data-sentence="true" aria-label="朗读例句" title="朗读例句">${icon("headphones", 18)}</button>
+        </div>
+      </div>
+      <div class="card-result-banner ${result.correct ? "is-correct" : "is-wrong"}">
+        <span class="card-result-icon">${icon(result.correct ? "check" : "x", 20)}</span>
+        <div>
+          <strong>${result.correct ? "拼写正确" : "拼写有误"}</strong>
+          <span>${result.correct ? `你拼写的是 ${escapeHTML(result.answer)}` : `你输入了 ${escapeHTML(result.answer)}，正确拼写是 ${escapeHTML(word.word)}`}</span>
+        </div>
+      </div>
+      <h2 class="${wordTitleClass(word.word)}" lang="en">${escapeHTML(word.word)}</h2>
+      <div class="phonetic-display">${renderPhonetic(word.phonetic)}</div>
+      <div><span class="word-pos-large">${escapeHTML(word.pos)}</span></div>
+      <div class="answer-panel">
+        <p class="meaning-large">${escapeHTML(word.meaning)}</p>
+        <div class="memory-grid">
+          <div class="memory-block">
+            <span class="memory-label">词形线索</span>
+            <p class="memory-text">${hints.map(escapeHTML).join("；")}</p>
+          </div>
+          <div class="memory-block">
+            <span class="memory-label">发音记忆</span>
+            <p class="memory-text">ˈ 后的音节重读，ˌ 后有次重音。先听一遍，再跟读两遍。</p>
+          </div>
+        </div>
+        <p class="example-sentence" lang="en">${highlightSentence(word, word.sentence)}</p>
+        <p class="example-translation">${escapeHTML(word.translation)}</p>
+        <p class="forms-text">${escapeHTML(word.forms)}</p>
+        <p class="stage-note">${escapeHTML(stageNote)}</p>
+      </div>
+      <div class="quiz-footer">
+        <button class="button button-primary" type="button" data-action="next-card">${nextLabel} ${icon("arrow-right", 17)}</button>
+      </div>
     </article>`;
   }
 
@@ -1260,11 +1350,12 @@
       learnIndex: 0,
       quizIndex: 0,
       quiz: [],
+      cardMode: dueIds.length ? "spelling" : "intro",
+      cardResult: null,
       answers: [],
       reviewOnly: reviewOnly || noNewSession,
     };
     lastAutoSpeakKey = "";
-    revealedCardKey = "";
     saveState();
     navigate("session");
   }
@@ -1281,22 +1372,52 @@
       session.learnIndex += 1;
       if (session.learnIndex >= session.newIds.length) session.phase = "quiz";
     }
-    revealedCardKey = "";
+    session.cardMode = session.phase === "review" ? "spelling" : "intro";
+    session.cardResult = null;
     ensureSessionPhase();
     if (state.activeSession) renderSession();
   }
 
-  function rateCurrentCard(correct) {
+  function startCardSpelling() {
     const session = state.activeSession;
     if (!session || !["review", "learn"].includes(session.phase)) return;
+    session.cardMode = "spelling";
+    session.cardResult = null;
+    saveState();
+    renderSession();
+  }
+
+  function submitCardSpelling(rawAnswer) {
+    const session = state.activeSession;
+    if (!session || !["review", "learn"].includes(session.phase) || session.cardResult) return;
     const ids = session.phase === "review" ? session.reviewIds : session.newIds;
     const index = session.phase === "review" ? session.reviewIndex : session.learnIndex;
     const wordId = ids[index];
     if (!wordId) return;
+    const word = getWord(wordId);
+    const answer = String(rawAnswer || "").trim();
+    if (!answer) {
+      showToast("先输入英文拼写。", { error: true });
+      return;
+    }
+    const correct = answer.toLowerCase() === word.word.toLowerCase();
     Core.applyAnswer(state.cards, wordId, correct, Core.todayKey());
-    session.answers.push({ wordId, correct, phase: session.phase });
+    session.answers.push({ wordId, correct, phase: session.phase, cardIndex: index });
+    session.cardResult = {
+      wordId,
+      phase: session.phase,
+      index,
+      correct,
+      answer,
+    };
     updateAnswerStats(correct);
     saveState();
+    renderSession();
+  }
+
+  function nextCard() {
+    const session = state.activeSession;
+    if (!session?.cardResult) return;
     advanceCard();
   }
 
@@ -1533,7 +1654,6 @@
     openConfirm("会删除全部学习日、掌握度和复习记录。词表不会受影响。确定重置吗？", () => {
       state = Core.createInitialState(Core.todayKey());
       lastAutoSpeakKey = "";
-      revealedCardKey = "";
       saveState();
       navigate("today", true);
       renderRoute({ focus: true });
@@ -1552,15 +1672,8 @@
     if (action === "speak-word") {
       speakWordById(element.dataset.wordId, element.dataset.sentence === "true" ? "sentence" : "word");
     }
-    if (action === "reveal-card") {
-      const session = state.activeSession;
-      if (session) {
-        const index = session.phase === "review" ? session.reviewIndex : session.learnIndex;
-        revealedCardKey = `${session.id}:${session.phase}:${index}:${(session.phase === "review" ? session.reviewIds : session.newIds)[index]}`;
-        renderSession();
-      }
-    }
-    if (action === "rate-card") rateCurrentCard(element.dataset.correct === "true");
+    if (action === "start-card-spelling") startCardSpelling();
+    if (action === "next-card") nextCard();
     if (action === "quiz-option") answerQuizOption(Number(element.dataset.optionIndex));
     if (action === "quiz-next") nextQuizQuestion();
     if (action === "set-library-filter") {
@@ -1645,10 +1758,17 @@
   });
 
   viewRoot.addEventListener("submit", (event) => {
-    if (!event.target.matches("[data-spelling-form]")) return;
-    event.preventDefault();
-    const form = new FormData(event.target);
-    answerSpelling(form.get("answer"));
+    if (event.target.matches("[data-card-spelling-form]")) {
+      event.preventDefault();
+      const form = new FormData(event.target);
+      submitCardSpelling(form.get("answer"));
+      return;
+    }
+    if (event.target.matches("[data-spelling-form]")) {
+      event.preventDefault();
+      const form = new FormData(event.target);
+      answerSpelling(form.get("answer"));
+    }
   });
 
   wordDialog.addEventListener("close", () => {
