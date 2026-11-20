@@ -38,6 +38,10 @@
     headphones: '<path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5a9 9 0 0 1 18 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/>',
     "spell-check": '<path d="m6 16 6-12 6 12"/><path d="M8 12h8"/><path d="m16 20 2 2 4-4"/>',
     "arrow-right": '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+    "corner-down-left": '<path d="M20 4v7a4 4 0 0 1-4 4H4"/><path d="m9 10-5 5 5 5"/>',
+    keyboard: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/><path d="M14 8h.01"/><path d="M18 8h.01"/><path d="M8 12h.01"/><path d="M12 12h.01"/><path d="M16 12h.01"/><path d="M7 16h10"/>',
+    "arrow-up": '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+    "arrow-down": '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
     "chevron-left": '<path d="m15 18-6-6 6-6"/>',
     "chevron-right": '<path d="m9 18 6-6-6-6"/>',
     clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
@@ -127,6 +131,10 @@
   let libraryPage = 1;
   let confirmCallback = null;
   let lastFocusedElement = null;
+  let confirmFocusedElement = null;
+  let currentDialogWordId = null;
+  let feedbackAudioContext = null;
+  let lastSpellingFeedbackKey = "";
   let lastAutoSpeakKey = "";
   let speechVoices = [];
   let storageAvailable = true;
@@ -150,6 +158,25 @@
     (root || document).querySelectorAll("[data-icon]").forEach((element) => {
       element.innerHTML = icon(element.dataset.icon, 20);
     });
+  }
+
+  function enterKeyHint() {
+    return `<span class="enter-key" aria-hidden="true">${icon("corner-down-left", 14)}<kbd>Enter</kbd></span>`;
+  }
+
+  function quizKeyboardHints() {
+    return `<div class="quiz-keyboard-hints" aria-label="选项键盘操作">
+      <span class="shortcut-hint"><span class="shortcut-key">${icon("arrow-up", 13)}<kbd>↑</kbd></span><span class="shortcut-key">${icon("arrow-down", 13)}<kbd>↓</kbd></span><span>切换选项</span></span>
+      <span class="shortcut-hint">${enterKeyHint()}<span>选择</span></span>
+    </div>`;
+  }
+
+  function shortcutKey(iconName, keys) {
+    return `<span class="shortcut-key" aria-hidden="true">${icon(iconName, 13)}<kbd>${keys}</kbd></span>`;
+  }
+
+  function renderSoundBars(kind) {
+    return `<span class="sound-bars sound-bars-${kind}" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>`;
   }
 
   function getWord(id) {
@@ -314,12 +341,20 @@
     return preferred || matched[0] || speechVoices[0] || null;
   }
 
-  function stopSpeaking() {
-    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  function clearSpeakingState() {
     document.body.classList.remove("is-speaking");
+    delete document.body.dataset.speaking;
+    document.querySelectorAll(".is-playing").forEach((button) => {
+      button.classList.remove("is-playing");
+    });
   }
 
-  function speakText(text, lang, rate) {
+  function stopSpeaking() {
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    clearSpeakingState();
+  }
+
+  function speakText(text, lang, rate, kind, sourceButton) {
     if (!text) return;
     if (!("speechSynthesis" in window)) {
       showToast("当前浏览器不支持语音朗读，请改用 Safari、Chrome 或 Edge。", { error: true });
@@ -327,29 +362,93 @@
     }
     loadVoices();
     window.speechSynthesis.cancel();
+    clearSpeakingState();
+    if (sourceButton) sourceButton.classList.add("is-playing");
     const utterance = new SpeechSynthesisUtterance(text);
     const voice = chooseVoice(lang);
     utterance.lang = lang || state.settings.accent;
     utterance.rate = rate || state.settings.rate;
     utterance.pitch = 1;
     if (voice) utterance.voice = voice;
-    utterance.onstart = () => document.body.classList.add("is-speaking");
-    utterance.onend = () => document.body.classList.remove("is-speaking");
-    utterance.onerror = () => document.body.classList.remove("is-speaking");
+    utterance.onstart = () => {
+      document.body.classList.add("is-speaking");
+      if (kind) document.body.dataset.speaking = kind;
+    };
+    utterance.onend = clearSpeakingState;
+    utterance.onerror = clearSpeakingState;
     window.speechSynthesis.speak(utterance);
   }
 
-  function speakWordById(id, type, slow) {
+  function speakWordById(id, type, slow, sourceButton) {
     const word = getWord(id);
     if (!word) return;
     const sentence = type === "sentence";
-    speakText(sentence ? word.sentence : word.word, state.settings.accent, slow ? 0.72 : state.settings.rate);
+    const kind = sentence ? "sentence" : "word";
+    const button =
+      sourceButton ||
+      viewRoot.querySelector(
+        `[data-action="speak-word"][data-audio-kind="${kind}"]`,
+      );
+    speakText(
+      sentence ? word.sentence : word.word,
+      state.settings.accent,
+      slow ? 0.72 : state.settings.rate,
+      kind,
+      button,
+    );
   }
 
   function maybeAutoSpeak(key, wordId, type) {
     if (!state.settings.autoPlay || lastAutoSpeakKey === key) return;
     lastAutoSpeakKey = key;
     speakWordById(wordId, type);
+  }
+
+  function playFeedbackTone(context, frequency, offset, duration, volume, type) {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const start = context.currentTime + offset;
+    oscillator.type = type;
+    oscillator.frequency.setValueAtTime(frequency, start);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(volume, start + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(start);
+    oscillator.stop(start + duration + 0.03);
+  }
+
+  function playSpellingSound(correct) {
+    if (!state.settings.soundEffects) return;
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    try {
+      feedbackAudioContext ||= new AudioContextClass();
+      const play = () => {
+        if (correct) {
+          playFeedbackTone(feedbackAudioContext, 523.25, 0, 0.12, 0.035, "sine");
+          playFeedbackTone(feedbackAudioContext, 659.25, 0.09, 0.12, 0.032, "sine");
+          playFeedbackTone(feedbackAudioContext, 783.99, 0.18, 0.2, 0.03, "sine");
+        } else {
+          playFeedbackTone(feedbackAudioContext, 220, 0, 0.15, 0.024, "triangle");
+          playFeedbackTone(feedbackAudioContext, 174.61, 0.12, 0.2, 0.022, "triangle");
+        }
+      };
+      if (feedbackAudioContext.state === "suspended") {
+        feedbackAudioContext.resume().then(play).catch(() => {});
+      } else {
+        play();
+      }
+    } catch (error) {
+      // Audio feedback is optional; spelling results remain usable without Web Audio support.
+    }
+  }
+
+  function triggerSpellingFeedback(correct, key) {
+    if (lastSpellingFeedbackKey === key) return;
+    lastSpellingFeedbackKey = key;
+    playSpellingSound(correct);
   }
 
   function getMemoryHints(word) {
@@ -380,18 +479,30 @@
   }
 
   function highlightSentence(word, sentence) {
-    const formTokens = String(word.forms || "")
-      .split(/[^A-Za-z]+/)
-      .map((token) => token.toLowerCase())
-      .filter((token) => token.length >= 4 && !["more", "most"].includes(token));
-    const stem = word.word.slice(0, Math.max(4, word.word.length - 2)).toLowerCase();
-    const forms = [...new Set(formTokens.filter((token) => token.startsWith(stem)))].sort(
-      (a, b) => b.length - a.length,
-    );
-    if (!forms.length) forms.push(word.word.toLowerCase());
+    const forms = getWordVariants(word);
     const escaped = escapeHTML(sentence);
     const pattern = new RegExp(`\\b(${forms.map(escapeRegExp).join("|")})\\b`, "gi");
     return escaped.replace(pattern, '<span class="highlight-word">$1</span>');
+  }
+
+  function redactSentence(word, sentence) {
+    const forms = getWordVariants(word);
+    const escaped = escapeHTML(sentence);
+    const pattern = new RegExp(`\\b(${forms.map(escapeRegExp).join("|")})\\b`, "gi");
+    return escaped.replace(
+      pattern,
+      '<span class="word-redaction"><span class="sr-only" lang="zh-CN">待拼写单词</span></span>',
+    );
+  }
+
+  function getWordVariants(word) {
+    const formTokens = String(word.forms || "")
+      .split(/[^A-Za-z]+/)
+      .map((token) => token.toLowerCase())
+      .filter((token) => token.length >= 1 && !["more", "most"].includes(token));
+    return [...new Set([word.word.toLowerCase(), ...formTokens])].sort(
+      (a, b) => b.length - a.length,
+    );
   }
 
   function escapeRegExp(value) {
@@ -410,6 +521,14 @@
     else renderRoute();
   }
 
+  function focusMainContent() {
+    const primary = viewRoot.querySelector(
+      '[data-action="start-session"], [data-action="start-review"], [data-action="start-card-spelling"], [data-action="next-card"], .quiz-option, #card-spelling-answer, .text-input, [data-action="set-daily"], .summary-actions a',
+    );
+    const target = primary || viewRoot.querySelector("button, a[href], input, select") || viewRoot;
+    target.focus({ preventScroll: true });
+  }
+
   function renderRoute(options) {
     currentRoute = normalizeRoute(location.hash.replace(/^#/, ""));
     if (location.hash !== `#${currentRoute}`) history.replaceState(null, "", `#${currentRoute}`);
@@ -425,7 +544,7 @@
       summary: renderSummary,
     };
     (renderers[currentRoute] || renderToday)();
-    if (options && options.focus) viewRoot.focus({ preventScroll: true });
+    if (options && options.focus) focusMainContent();
     else window.scrollTo({ top: 0, behavior: "auto" });
   }
 
@@ -435,7 +554,7 @@
     loadVoices();
     window.speechSynthesis.addEventListener?.("voiceschanged", () => {
       loadVoices();
-      if (currentRoute === "settings") renderSettings();
+      if (currentRoute === "settings") refreshVoiceSelect();
     });
   }
 
@@ -659,8 +778,8 @@
           </button>
           <span class="meaning">${escapeHTML(word.meaning)}</span>
           <span class="due-due">${escapeHTML(formatDueLabel(card?.due))}</span>
-          <button class="icon-button" type="button" data-action="speak-word" data-word-id="${id}" aria-label="朗读 ${escapeHTML(word.word)}" title="朗读单词">
-            ${icon("volume-2", 18)}
+          <button class="sound-button compact-sound-button" type="button" data-action="speak-word" data-word-id="${id}" data-audio-kind="word" aria-label="朗读 ${escapeHTML(word.word)}" title="朗读单词">
+            ${icon("volume-2", 17)}${renderSoundBars("word")}
           </button>
         </div>`;
       })
@@ -810,8 +929,8 @@
           <span class="meaning">${escapeHTML(word.meaning)}</span>
           <span class="pos-tag">${escapeHTML(word.pos)}</span>
           <span class="status-pill ${status.className}">${status.label}</span>
-          <button class="sound-button" type="button" data-action="speak-word" data-word-id="${word.id}" aria-label="朗读 ${escapeHTML(word.word)}" title="朗读单词">
-            <span class="icon">${icon("volume-2", 17)}</span><span class="sound-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span><span class="sound-label">听</span>
+          <button class="sound-button" type="button" data-action="speak-word" data-word-id="${word.id}" data-audio-kind="word" aria-label="朗读 ${escapeHTML(word.word)}" title="朗读单词">
+            <span class="icon">${icon("volume-2", 17)}</span>${renderSoundBars("word")}<span class="sound-label">听</span>
           </button>
         </div>`;
       })
@@ -832,14 +951,25 @@
     return { label: "已掌握", className: "status-mastered" };
   }
 
-  function renderSettings() {
-    const info = examInfo();
-    const stats = Core.getCardStats(state.cards, WORDS.length);
-    const voiceOptions = speechVoices.length
+  function voiceOptionsMarkup() {
+    return speechVoices.length
       ? speechVoices
           .map((voice) => `<option value="${escapeHTML(voice.voiceURI)}" ${voice.voiceURI === state.settings.voiceURI ? "selected" : ""}>${escapeHTML(voice.name)} · ${escapeHTML(voice.lang)}</option>`)
           .join("")
       : '<option value="">浏览器英语语音加载中</option>';
+  }
+
+  function refreshVoiceSelect() {
+    const select = document.querySelector('[data-setting="voiceURI"]');
+    if (!select) return;
+    select.innerHTML = voiceOptionsMarkup();
+    if (state.settings.voiceURI) select.value = state.settings.voiceURI;
+  }
+
+  function renderSettings() {
+    const info = examInfo();
+    const stats = Core.getCardStats(state.cards, WORDS.length);
+    const voiceOptions = voiceOptionsMarkup();
     const voiceWarning = "speechSynthesis" in window
       ? ""
       : `<p class="speech-warning">当前浏览器不支持系统语音朗读。请使用 Safari、Chrome 或 Edge 打开页面。</p>`;
@@ -860,8 +990,8 @@
             <div class="setting-row">
               <div class="setting-copy"><span class="setting-label">每日新词</span><span class="setting-help">默认 10 个，新词完成后才推进到下一组</span></div>
               <div class="setting-control">
-                <div class="segmented" aria-label="每日新词数量">
-                  ${Core.DAILY_OPTIONS.map((value) => `<button class="segment-button ${state.settings.dailyNew === value ? "is-active" : ""}" type="button" data-action="set-daily" data-daily="${value}">${value}</button>`).join("")}
+                <div class="segmented" role="group" aria-label="每日新词数量">
+                  ${Core.DAILY_OPTIONS.map((value) => `<button class="segment-button ${state.settings.dailyNew === value ? "is-active" : ""}" type="button" data-action="set-daily" data-daily="${value}" aria-pressed="${state.settings.dailyNew === value}">${value}</button>`).join("")}
                 </div>
               </div>
             </div>
@@ -873,13 +1003,13 @@
 
           <section class="settings-section" aria-labelledby="exam-settings-title">
             <h2 id="exam-settings-title">考试目标</h2>
-            <p>${info ? (info.past ? "考试日期已过，可以继续使用复习系统。" : `距考试 ${info.days} 天，首轮还剩 ${info.unseen} 个词。`) : "设置日期后，首页显示倒计时与每日所需进度。"}</p>
+            <p id="exam-settings-summary">${info ? (info.past ? "考试日期已过，可以继续使用复习系统。" : `距考试 ${info.days} 天，首轮还剩 ${info.unseen} 个词。`) : "设置日期后，首页显示倒计时与每日所需进度。"}</p>
             <div class="setting-row">
               <div class="setting-copy"><span class="setting-label">考试日期</span><span class="setting-help">可选，不会自动改变每日新词数量</span></div>
               <div class="setting-control"><input class="date-input" type="date" data-setting="examDate" aria-label="考试日期" value="${escapeHTML(state.settings.examDate)}" /></div>
             </div>
             <div class="setting-row">
-              <div class="setting-copy"><span class="setting-label">首轮剩余</span><span class="setting-help">按当前每日 ${state.settings.dailyNew} 词估算</span></div>
+              <div class="setting-copy"><span class="setting-label">首轮剩余</span><span class="setting-help" id="daily-estimate">按当前每日 ${state.settings.dailyNew} 词估算</span></div>
               <div class="setting-control"><span class="plan-chip">${stats.unseen} 词</span></div>
             </div>
           </section>
@@ -891,9 +1021,9 @@
             <div class="setting-row">
               <div class="setting-copy"><span class="setting-label">口音</span><span class="setting-help">不同设备可用的声音会略有差异</span></div>
               <div class="setting-control">
-                <div class="segmented" aria-label="英语口音">
-                  <button class="segment-button ${state.settings.accent === "en-US" ? "is-active" : ""}" type="button" data-action="set-accent" data-accent="en-US">美音</button>
-                  <button class="segment-button ${state.settings.accent === "en-GB" ? "is-active" : ""}" type="button" data-action="set-accent" data-accent="en-GB">英音</button>
+                <div class="segmented" role="group" aria-label="英语口音">
+                  <button class="segment-button ${state.settings.accent === "en-US" ? "is-active" : ""}" type="button" data-action="set-accent" data-accent="en-US" aria-pressed="${state.settings.accent === "en-US"}">美音</button>
+                  <button class="segment-button ${state.settings.accent === "en-GB" ? "is-active" : ""}" type="button" data-action="set-accent" data-accent="en-GB" aria-pressed="${state.settings.accent === "en-GB"}">英音</button>
                 </div>
               </div>
             </div>
@@ -909,7 +1039,11 @@
               <div class="setting-copy"><span class="setting-label">自动朗读</span><span class="setting-help">进入新词卡和听音题时自动播放</span></div>
               <div class="setting-control"><button class="toggle ${state.settings.autoPlay ? "is-on" : ""}" type="button" data-action="toggle-autoplay" aria-label="自动朗读" aria-pressed="${state.settings.autoPlay}"></button></div>
             </div>
-            <div class="backup-actions"><button class="button button-secondary button-sm" type="button" data-action="test-voice">${icon("volume-2", 16)} 试听</button></div>
+            <div class="setting-row">
+              <div class="setting-copy"><span class="setting-label">答题音效</span><span class="setting-help">拼写正确或错误时播放简短提示音</span></div>
+              <div class="setting-control"><button class="toggle ${state.settings.soundEffects ? "is-on" : ""}" type="button" data-action="toggle-sound-effects" aria-label="答题音效" aria-pressed="${state.settings.soundEffects}"></button></div>
+            </div>
+            <div class="backup-actions"><button class="button button-secondary button-sm sound-button settings-audio-button" type="button" data-action="test-voice" data-audio-kind="sentence" aria-keyshortcuts="Shift+Space">${icon("volume-2", 16)} 试听 ${renderSoundBars("sentence")}</button></div>
           </section>
 
           <section class="settings-section" aria-labelledby="data-settings-title">
@@ -1001,19 +1135,41 @@
           wordId,
           "word",
         );
-        if (active.cardMode === "spelling") {
-          window.setTimeout(() => document.getElementById("card-spelling-answer")?.focus(), 50);
-        }
       }
     } else if (active.phase === "quiz") {
       const item = active.quiz[active.quizIndex];
       if (item && item.type === "listening") {
         maybeAutoSpeak(`${active.id}:quiz:${active.quizIndex}`, item.wordId, "word");
       }
-      if (item && item.type === "spelling" && !item.answered) {
-        window.setTimeout(() => document.getElementById("spelling-answer")?.focus(), 50);
-      }
     }
+    focusSessionPrimaryControl(active);
+  }
+
+  function focusSessionPrimaryControl(session) {
+    let selector = "";
+    if (session.phase === "review" || session.phase === "learn") {
+      if (session.cardResult) selector = '[data-action="next-card"]';
+      else if (session.cardMode === "spelling") selector = "#card-spelling-answer";
+      else selector = '[data-action="start-card-spelling"]';
+    } else if (session.phase === "quiz") {
+      const item = session.quiz[session.quizIndex];
+      if (item?.answered) selector = '[data-action="quiz-next"]';
+      else if (item?.type === "spelling") selector = "#spelling-answer";
+      else selector = ".quiz-option";
+    }
+    const target = selector ? viewRoot.querySelector(selector) : null;
+    if (target && !target.disabled) target.focus({ preventScroll: true });
+  }
+
+  function currentSessionWordId(session) {
+    if (!session) return null;
+    if (session.phase === "review" || session.phase === "learn") {
+      const ids = session.phase === "review" ? session.reviewIds : session.newIds;
+      const index = session.phase === "review" ? session.reviewIndex : session.learnIndex;
+      return ids[index] || null;
+    }
+    if (session.phase === "quiz") return session.quiz[session.quizIndex]?.wordId || null;
+    return null;
   }
 
   function ensureSessionPhase() {
@@ -1083,41 +1239,84 @@
 
   function renderCardIntro(wordId, phase, index, total) {
     const word = getWord(wordId);
-    const phaseName = phase === "review" ? "复习" : "新词";
+    const card = state.cards[wordId];
+    const phaseName = phase === "review" ? "复习准备" : "新词学习";
+    const stageNote = card
+      ? `记忆阶段 ${card.stage} / 5 · ${formatDueLabel(card.due)}`
+      : "首次学习 · 拼写后进入第 1 阶段";
     return `<article class="word-card" aria-label="${phaseName}词卡">
       <div class="word-card-head">
         <span class="word-card-index">${phaseName} ${index + 1} / ${total} · 第 ${wordId} 个</span>
         <div class="word-card-audio">
-          <button class="sound-button" type="button" data-action="speak-word" data-word-id="${wordId}" aria-label="朗读 ${escapeHTML(word.word)}" title="朗读单词">
+          <button class="sound-button" type="button" data-action="speak-word" data-word-id="${wordId}" data-audio-kind="word" aria-label="朗读 ${escapeHTML(word.word)}" aria-keyshortcuts="Space" title="朗读单词（空格）">
             <span class="icon">${icon("volume-2", 18)}</span>
-            <span class="sound-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
+            ${renderSoundBars("word")}
             <span class="sound-label">单词</span>
+            ${shortcutKey("keyboard", "Space")}
+          </button>
+          <button class="sound-button" type="button" data-action="speak-word" data-word-id="${wordId}" data-sentence="true" data-audio-kind="sentence" aria-label="朗读例句" aria-keyshortcuts="Shift+Space" title="朗读例句（Shift + 空格）">
+            <span class="icon">${icon("headphones", 18)}</span>
+            ${renderSoundBars("sentence")}
+            <span class="sound-label">例句</span>
+            ${shortcutKey("arrow-up", "Shift+Space")}
           </button>
         </div>
       </div>
       <h2 class="${wordTitleClass(word.word)}" lang="en">${escapeHTML(word.word)}</h2>
       <div class="phonetic-display">${renderPhonetic(word.phonetic)}</div>
       <div><span class="word-pos-large">${escapeHTML(word.pos)}</span></div>
-      <div class="recall-prompt">
-        <p>先听发音，观察单词拼写和音标。</p>
-        <small>下一步会隐藏英文，只根据发音和中文意思拼写。</small>
-      </div>
-      <button class="button button-secondary spelling-start-button" type="button" data-action="start-card-spelling">${icon("spell-check", 18)} 开始拼写</button>
+      ${renderLearningDetails(word, card, stageNote)}
+      <button class="button button-secondary spelling-start-button keyboard-action" type="button" data-action="start-card-spelling" aria-keyshortcuts="Enter">${icon("spell-check", 18)} 开始拼写 ${enterKeyHint()}</button>
     </article>`;
+  }
+
+  function renderLearningDetails(word, card, stageNote) {
+    const hints = getMemoryHints(word);
+    return `<div class="answer-panel">
+      <p class="meaning-large">${escapeHTML(word.meaning)}</p>
+      <div class="memory-grid">
+        <div class="memory-block">
+          <span class="memory-label">词形线索</span>
+          <p class="memory-text">${hints.map(escapeHTML).join("；")}</p>
+        </div>
+        <div class="memory-block">
+          <span class="memory-label">发音记忆</span>
+          <p class="memory-text">ˈ 后的音节重读，ˌ 后有次重音。先听一遍，再跟读两遍。</p>
+        </div>
+      </div>
+      <div class="example-block">
+        <span class="memory-label">例句</span>
+        <p class="example-sentence" lang="en">${highlightSentence(word, word.sentence)}</p>
+        <p class="example-translation">${escapeHTML(word.translation)}</p>
+      </div>
+      <div class="forms-block">
+        <span class="memory-label">词形变化</span>
+        <p class="forms-text">${escapeHTML(word.forms)}</p>
+      </div>
+      <p class="stage-note">${escapeHTML(stageNote)}</p>
+    </div>`;
   }
 
   function renderSpellingCard(wordId, phase, index, total) {
     const word = getWord(wordId);
     const phaseName = phase === "review" ? "复习" : "新词";
-    const letterCount = word.word.replace(/[^A-Za-z]/g, "").length;
     return `<article class="word-card spelling-card" aria-label="${phaseName}拼写检查">
       <div class="word-card-head">
         <span class="word-card-index">${phaseName} ${index + 1} / ${total} · 听音拼写</span>
-        <button class="sound-button" type="button" data-action="speak-word" data-word-id="${wordId}" aria-label="播放发音" title="播放发音">
-          <span class="icon">${icon("volume-2", 18)}</span>
-          <span class="sound-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
-          <span class="sound-label">发音</span>
-        </button>
+        <div class="word-card-audio">
+          <button class="sound-button" type="button" data-action="speak-word" data-word-id="${wordId}" data-audio-kind="word" aria-label="播放发音" aria-keyshortcuts="Space" title="播放发音（空格）">
+            <span class="icon">${icon("volume-2", 18)}</span>
+            ${renderSoundBars("word")}
+            <span class="sound-label">单词</span>
+            ${shortcutKey("keyboard", "Space")}
+          </button>
+          <button class="sound-button" type="button" data-action="speak-word" data-word-id="${wordId}" data-sentence="true" data-audio-kind="sentence" aria-label="播放例句" aria-keyshortcuts="Shift+Space" title="播放例句（Shift + 空格）">
+            <span class="icon">${icon("headphones", 18)}</span>
+            ${renderSoundBars("sentence")}
+            <span class="sound-label">例句</span>
+            ${shortcutKey("arrow-up", "Shift+Space")}
+          </button>
+        </div>
       </div>
       <div class="spelling-context">
         <span class="quiz-kicker">拼写检查</span>
@@ -1125,18 +1324,41 @@
         <p class="meaning-large">${escapeHTML(word.meaning)}</p>
         <div class="spelling-meta">
           <span class="pos-tag">${escapeHTML(word.pos)}</span>
-          <span>${letterCount} 个字母</span>
         </div>
-        <button class="button button-secondary spelling-play-button" type="button" data-action="speak-word" data-word-id="${wordId}">
-          ${icon("volume-2", 18)} 播放发音
-        </button>
+        <div class="spelling-example">
+          <span class="memory-label">例句</span>
+          <p class="example-sentence" lang="en">${redactSentence(word, word.sentence)}</p>
+          <p class="example-translation">${escapeHTML(word.translation)}</p>
+        </div>
       </div>
-      <form class="spelling-form card-spelling-form" data-card-spelling-form>
-        <label class="sr-only" for="card-spelling-answer">输入英文拼写</label>
-        <input class="spelling-input" id="card-spelling-answer" name="answer" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入英文拼写" />
-        <button class="button button-primary button-wide" type="submit">${icon("check", 18)} 检查拼写</button>
-      </form>
+      <label class="letter-entry" for="card-spelling-answer">
+        <span class="sr-only">输入 ${word.word.length} 个字母的英文拼写</span>
+        ${renderLetterSlots(word.word)}
+        <input class="sr-only" id="card-spelling-answer" name="answer" type="text" maxlength="${word.word.length}" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="输入英文拼写" />
+      </label>
     </article>`;
+  }
+
+  function renderLetterSlots(word, answer, evaluated) {
+    const densityClass =
+      word.length >= 13
+        ? "letter-slots-extra-dense"
+        : word.length >= 10
+          ? "letter-slots-dense"
+          : "";
+    return `<span class="letter-slots ${densityClass} ${evaluated ? "letter-slots-evaluated" : ""}" aria-hidden="true">${Array.from(
+      { length: word.length },
+      (_, index) => {
+        const typed = answer?.[index] || "";
+        const state = evaluated
+          ? typed.toLowerCase() === word[index].toLowerCase()
+            ? "is-correct"
+            : "is-wrong"
+          : "";
+        const current = !evaluated && !answer && index === 0 ? "is-current" : "";
+        return `<span class="letter-slot ${typed ? "is-filled" : "is-empty"} ${state} ${current}" data-slot-index="${index}" style="--slot-index:${index}"><span class="letter-char">${escapeHTML(typed)}</span><span class="letter-rule"></span></span>`;
+      },
+    ).join("")}</span>`;
   }
 
   function renderCardResult(wordId, phase, index, total, session) {
@@ -1147,7 +1369,6 @@
     const stageNote = card
       ? `记忆阶段 ${card.stage} / 5 · ${formatDueLabel(card.due)}`
       : "本轮答案已记录";
-    const hints = getMemoryHints(word);
     const isLastReview = phase === "review" && index >= session.reviewIds.length - 1;
     const isLastLearn = phase === "learn" && index >= session.newIds.length - 1;
     const nextLabel = isLastReview
@@ -1162,43 +1383,37 @@
       <div class="word-card-head">
         <span class="word-card-index">${phaseName} ${index + 1} / ${total} · 拼写结果</span>
         <div class="word-card-audio">
-          <button class="sound-button" type="button" data-action="speak-word" data-word-id="${wordId}" aria-label="朗读 ${escapeHTML(word.word)}" title="朗读单词">
+          <button class="sound-button" type="button" data-action="speak-word" data-word-id="${wordId}" data-audio-kind="word" aria-label="朗读 ${escapeHTML(word.word)}" aria-keyshortcuts="Space" title="朗读单词（空格）">
             <span class="icon">${icon("volume-2", 18)}</span>
-            <span class="sound-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
+            ${renderSoundBars("word")}
             <span class="sound-label">单词</span>
+            ${shortcutKey("keyboard", "Space")}
           </button>
-          <button class="icon-button" type="button" data-action="speak-word" data-word-id="${wordId}" data-sentence="true" aria-label="朗读例句" title="朗读例句">${icon("headphones", 18)}</button>
+          <button class="sound-button" type="button" data-action="speak-word" data-word-id="${wordId}" data-sentence="true" data-audio-kind="sentence" aria-label="朗读例句" aria-keyshortcuts="Shift+Space" title="朗读例句（Shift + 空格）">
+            <span class="icon">${icon("headphones", 18)}</span>
+            ${renderSoundBars("sentence")}
+            <span class="sound-label">例句</span>
+            ${shortcutKey("arrow-up", "Shift+Space")}
+          </button>
         </div>
       </div>
-      <div class="card-result-banner ${result.correct ? "is-correct" : "is-wrong"}">
+      <div class="card-result-banner ${result.correct ? "is-correct" : "is-wrong"}" role="status" aria-live="polite">
         <span class="card-result-icon">${icon(result.correct ? "check" : "x", 20)}</span>
         <div>
           <strong>${result.correct ? "拼写正确" : "拼写有误"}</strong>
-          <span>${result.correct ? `你拼写的是 ${escapeHTML(result.answer)}` : `你输入了 ${escapeHTML(result.answer)}，正确拼写是 ${escapeHTML(word.word)}`}</span>
+          <span class="card-result-message">${result.correct ? `你拼写的是 ${escapeHTML(result.answer)}` : `你输入了 ${escapeHTML(result.answer)}，正确拼写是 ${escapeHTML(word.word)}`}</span>
+        </div>
+        <div class="answer-spelling">
+          <span class="answer-spelling-label">你的拼写</span>
+          ${renderLetterSlots(word.word, result.answer, true)}
         </div>
       </div>
       <h2 class="${wordTitleClass(word.word)}" lang="en">${escapeHTML(word.word)}</h2>
       <div class="phonetic-display">${renderPhonetic(word.phonetic)}</div>
       <div><span class="word-pos-large">${escapeHTML(word.pos)}</span></div>
-      <div class="answer-panel">
-        <p class="meaning-large">${escapeHTML(word.meaning)}</p>
-        <div class="memory-grid">
-          <div class="memory-block">
-            <span class="memory-label">词形线索</span>
-            <p class="memory-text">${hints.map(escapeHTML).join("；")}</p>
-          </div>
-          <div class="memory-block">
-            <span class="memory-label">发音记忆</span>
-            <p class="memory-text">ˈ 后的音节重读，ˌ 后有次重音。先听一遍，再跟读两遍。</p>
-          </div>
-        </div>
-        <p class="example-sentence" lang="en">${highlightSentence(word, word.sentence)}</p>
-        <p class="example-translation">${escapeHTML(word.translation)}</p>
-        <p class="forms-text">${escapeHTML(word.forms)}</p>
-        <p class="stage-note">${escapeHTML(stageNote)}</p>
-      </div>
+      ${renderLearningDetails(word, card, stageNote)}
       <div class="quiz-footer">
-        <button class="button button-primary" type="button" data-action="next-card">${nextLabel} ${icon("arrow-right", 17)}</button>
+        <button class="button button-primary keyboard-action" type="button" data-action="next-card" aria-keyshortcuts="Enter">${nextLabel} ${enterKeyHint()}</button>
       </div>
     </article>`;
   }
@@ -1223,25 +1438,26 @@
     if (item.type === "meaning") {
       questionBody = `<h2 class="${quizWordClass}" lang="en">${escapeHTML(word.word)}</h2><div class="phonetic-display">${renderPhonetic(word.phonetic)}</div>`;
     } else if (item.type === "listening") {
-      questionBody = `<button class="quiz-listen-button" type="button" data-action="speak-word" data-word-id="${item.wordId}" aria-label="播放发音">
+      questionBody = `<button class="quiz-listen-button" type="button" data-action="speak-word" data-word-id="${item.wordId}" data-audio-kind="word" aria-label="播放发音" aria-keyshortcuts="Space">
         <span class="quiz-listen-icon">${icon("volume-2", 28)}</span>
-        <span>播放单词发音</span>
+        <span class="quiz-listen-label">播放单词发音 ${renderSoundBars("word")}</span>
+        <span class="quiz-listen-key">${shortcutKey("keyboard", "Space")}</span>
       </button>`;
     } else {
       questionBody = `<p class="meaning-large">${escapeHTML(word.meaning)}</p>
-        <div class="backup-actions"><button class="button button-secondary button-sm" type="button" data-action="speak-word" data-word-id="${item.wordId}">${icon("volume-2", 16)} 听发音</button></div>`;
+        <div class="backup-actions"><button class="button button-secondary button-sm sound-button quiz-audio-button" type="button" data-action="speak-word" data-word-id="${item.wordId}" data-audio-kind="word" aria-keyshortcuts="Space">${icon("volume-2", 16)} 听发音 ${renderSoundBars("word")} ${shortcutKey("keyboard", "Space")}</button></div>`;
     }
 
     let interaction = "";
     if (item.type === "meaning" || item.type === "listening") {
-      interaction = `<div class="quiz-options">
+      interaction = `${item.answered ? "" : quizKeyboardHints()}<div class="quiz-options">
         ${item.options
           .map((optionId, index) => {
             const optionWord = getWord(optionId);
             const isCorrect = item.answered && optionId === item.wordId;
             const isWrong = item.answered && item.selectedIndex === index && optionId !== item.wordId;
             const optionText = item.type === "meaning" ? optionWord.meaning : optionWord.word;
-            return `<button class="quiz-option ${isCorrect ? "is-correct" : ""} ${isWrong ? "is-wrong" : ""} ${item.selectedIndex === index ? "is-selected" : ""}" type="button" data-action="quiz-option" data-option-index="${index}" ${item.answered ? "disabled" : ""}>
+            return `<button class="quiz-option ${isCorrect ? "is-correct" : ""} ${isWrong ? "is-wrong" : ""} ${item.selectedIndex === index ? "is-selected" : ""}" type="button" data-action="quiz-option" data-option-index="${index}" aria-keyshortcuts="ArrowUp ArrowDown Enter" ${item.answered ? "disabled" : ""}>
               <span class="option-key">${String.fromCharCode(65 + index)}</span>
               <span class="option-copy" ${item.type === "listening" ? 'lang="en"' : ""}>${escapeHTML(optionText)}</span>
               ${isCorrect ? `<span class="icon">${icon("check", 18)}</span>` : isWrong ? `<span class="icon">${icon("x", 18)}</span>` : "<span></span>"}
@@ -1250,19 +1466,20 @@
           .join("")}
       </div>`;
     } else if (!item.answered) {
-      interaction = `<form class="spelling-form" data-spelling-form>
-        <label class="sr-only" for="spelling-answer">拼写答案</label>
-        <input class="spelling-input" id="spelling-answer" name="answer" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入英文单词" />
-        <button class="button button-primary button-wide" type="submit">${icon("spell-check", 18)} 提交答案</button>
-      </form>`;
+      interaction = `<label class="letter-entry quiz-letter-entry" for="spelling-answer">
+        <span class="sr-only">输入 ${word.word.length} 个字母的英文拼写</span>
+        ${renderLetterSlots(word.word)}
+        <input class="sr-only" id="spelling-answer" name="answer" type="text" maxlength="${word.word.length}" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="输入英文拼写" />
+      </label>`;
     }
 
     const feedback = item.answered
-      ? `<div class="quiz-feedback ${item.correct ? "" : "is-wrong"}">
+      ? `<div class="quiz-feedback ${item.correct ? "is-correct" : "is-wrong"}" role="status" aria-live="polite">
           <strong>${item.correct ? "回答正确" : "需要再记一次"}</strong>
           <span>${escapeHTML(word.word)} · ${escapeHTML(word.meaning)}</span>
+          ${item.type === "spelling" ? `<div class="quiz-answer-slots">${renderLetterSlots(word.word, item.answer, true)}</div>` : ""}
         </div>
-        <div class="quiz-footer"><button class="button button-primary" type="button" data-action="quiz-next">${session.quizIndex === session.quiz.length - 1 ? "查看本次小结" : "下一题"} ${icon("arrow-right", 17)}</button></div>`
+        <div class="quiz-footer"><button class="button button-primary keyboard-action" type="button" data-action="quiz-next" aria-keyshortcuts="Enter">${session.quizIndex === session.quiz.length - 1 ? "查看本次小结" : "下一题"} ${enterKeyHint()}</button></div>`
       : "";
 
     return `<article class="quiz-card" aria-label="${typeLabel}">
@@ -1290,7 +1507,7 @@
       ? weakWords
           .map((word) => `<div class="summary-word-row">
             <span class="summary-word-copy"><strong lang="en">${escapeHTML(word.word)}</strong><span>${escapeHTML(word.meaning)}</span></span>
-            <button class="icon-button" type="button" data-action="speak-word" data-word-id="${word.id}" aria-label="朗读 ${escapeHTML(word.word)}" title="朗读单词">${icon("volume-2", 17)}</button>
+            <button class="sound-button compact-sound-button" type="button" data-action="speak-word" data-word-id="${word.id}" data-audio-kind="word" aria-label="朗读 ${escapeHTML(word.word)}" title="朗读单词">${icon("volume-2", 17)}${renderSoundBars("word")}</button>
           </div>`)
           .join("")
       : `<div class="lines-empty">本次没有答错的词。</div>`;
@@ -1315,6 +1532,9 @@
           </div>
         </article>
       </section>`;
+    window.requestAnimationFrame(() => {
+      viewRoot.querySelector(".summary-actions .button-primary")?.focus({ preventScroll: true });
+    });
   }
 
   function createSessionId() {
@@ -1350,7 +1570,7 @@
       learnIndex: 0,
       quizIndex: 0,
       quiz: [],
-      cardMode: dueIds.length ? "spelling" : "intro",
+      cardMode: "intro",
       cardResult: null,
       answers: [],
       reviewOnly: reviewOnly || noNewSession,
@@ -1372,7 +1592,7 @@
       session.learnIndex += 1;
       if (session.learnIndex >= session.newIds.length) session.phase = "quiz";
     }
-    session.cardMode = session.phase === "review" ? "spelling" : "intro";
+    session.cardMode = "intro";
     session.cardResult = null;
     ensureSessionPhase();
     if (state.activeSession) renderSession();
@@ -1387,6 +1607,43 @@
     renderSession();
   }
 
+  function handleCardSpellingInput(input) {
+    const session = state.activeSession;
+    if (!session || !["review", "learn"].includes(session.phase) || session.cardResult) return;
+    const ids = session.phase === "review" ? session.reviewIds : session.newIds;
+    const index = session.phase === "review" ? session.reviewIndex : session.learnIndex;
+    const word = getWord(ids[index]);
+    if (!word) return;
+    const value = input.value.replace(/[^A-Za-z]/g, "").slice(0, word.word.length);
+    if (input.value !== value) input.value = value;
+    updateLetterEntry(input, value, word.word.length);
+    if (value.length === word.word.length) submitCardSpelling(value);
+  }
+
+  function updateLetterEntry(input, value, letterCount) {
+    const slots = input.closest(".letter-entry")?.querySelectorAll(".letter-slot") || [];
+    slots.forEach((slot, slotIndex) => {
+      const character = value[slotIndex] || "";
+      const characterElement = slot.querySelector(".letter-char");
+      if (characterElement) characterElement.textContent = character;
+      slot.classList.toggle("is-empty", !character);
+      slot.classList.toggle("is-filled", Boolean(character));
+      slot.classList.toggle("is-current", slotIndex === value.length && value.length < letterCount);
+    });
+  }
+
+  function handleQuizSpellingInput(input) {
+    const session = state.activeSession;
+    if (!session || session.phase !== "quiz") return;
+    const item = session.quiz[session.quizIndex];
+    if (!item || item.type !== "spelling" || item.answered) return;
+    const word = getWord(item.wordId);
+    const value = input.value.replace(/[^A-Za-z]/g, "").slice(0, word.word.length);
+    if (input.value !== value) input.value = value;
+    updateLetterEntry(input, value, word.word.length);
+    if (value.length === word.word.length) answerSpelling(value);
+  }
+
   function submitCardSpelling(rawAnswer) {
     const session = state.activeSession;
     if (!session || !["review", "learn"].includes(session.phase) || session.cardResult) return;
@@ -1395,11 +1652,8 @@
     const wordId = ids[index];
     if (!wordId) return;
     const word = getWord(wordId);
-    const answer = String(rawAnswer || "").trim();
-    if (!answer) {
-      showToast("先输入英文拼写。", { error: true });
-      return;
-    }
+    const answer = String(rawAnswer || "").replace(/[^A-Za-z]/g, "").trim();
+    if (answer.length !== word.word.length) return;
     const correct = answer.toLowerCase() === word.word.toLowerCase();
     Core.applyAnswer(state.cards, wordId, correct, Core.todayKey());
     session.answers.push({ wordId, correct, phase: session.phase, cardIndex: index });
@@ -1411,6 +1665,10 @@
       answer,
     };
     updateAnswerStats(correct);
+    triggerSpellingFeedback(
+      correct,
+      `${session.id}:card:${session.phase}:${index}:${wordId}`,
+    );
     saveState();
     renderSession();
   }
@@ -1444,16 +1702,18 @@
     const item = session.quiz[session.quizIndex];
     if (!item || item.answered) return;
     const word = getWord(item.wordId);
-    const answer = String(rawAnswer || "").trim().toLowerCase();
-    if (!answer) {
-      showToast("先输入一个答案。", { error: true });
-      return;
-    }
+    const answer = String(rawAnswer || "").replace(/[^A-Za-z]/g, "").slice(0, word.word.length);
+    if (answer.length !== word.word.length) return;
     item.answered = true;
+    item.answer = answer;
     item.correct = answer === word.word.toLowerCase();
     Core.applyAnswer(state.cards, item.wordId, item.correct, Core.todayKey());
     session.answers.push({ wordId: item.wordId, correct: item.correct, phase: "quiz" });
     updateAnswerStats(item.correct);
+    triggerSpellingFeedback(
+      item.correct,
+      `${session.id}:quiz:${session.quizIndex}:${item.wordId}`,
+    );
     saveState();
     renderSession();
   }
@@ -1527,6 +1787,7 @@
     if (!word) return;
     const card = state.cards[wordId];
     const status = getLibraryStatus(card);
+    currentDialogWordId = wordId;
     lastFocusedElement = document.activeElement;
     wordDialogContent.innerHTML = `
       <div class="dialog-word-row">
@@ -1536,10 +1797,12 @@
           <span class="word-pos-large">${escapeHTML(word.pos)}</span>
         </div>
         <div class="word-card-audio">
-          <button class="sound-button" type="button" data-action="speak-word" data-word-id="${wordId}">
-            <span class="icon">${icon("volume-2", 18)}</span><span class="sound-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span><span class="sound-label">单词</span>
+          <button class="sound-button" type="button" data-action="speak-word" data-word-id="${wordId}" data-audio-kind="word" aria-label="朗读 ${escapeHTML(word.word)}" aria-keyshortcuts="Space" title="朗读单词">
+            <span class="icon">${icon("volume-2", 18)}</span>${renderSoundBars("word")}<span class="sound-label">单词</span>${shortcutKey("keyboard", "Space")}
           </button>
-          <button class="icon-button" type="button" data-action="speak-word" data-word-id="${wordId}" data-sentence="true" aria-label="朗读例句" title="朗读例句">${icon("headphones", 18)}</button>
+          <button class="sound-button" type="button" data-action="speak-word" data-word-id="${wordId}" data-sentence="true" data-audio-kind="sentence" aria-label="朗读例句" aria-keyshortcuts="Shift+Space" title="朗读例句">
+            <span class="icon">${icon("headphones", 18)}</span>${renderSoundBars("sentence")}<span class="sound-label">例句</span>${shortcutKey("arrow-up", "Shift+Space")}
+          </button>
         </div>
       </div>
       <p class="dialog-meaning">${escapeHTML(word.meaning)}</p>
@@ -1555,25 +1818,39 @@
       </div>`;
     if (typeof wordDialog.showModal === "function") wordDialog.showModal();
     else wordDialog.setAttribute("open", "");
+    wordDialog.querySelector('[data-action="close-word-dialog"]')?.focus({ preventScroll: true });
   }
 
   function closeWordDialog() {
     if (wordDialog.open && typeof wordDialog.close === "function") wordDialog.close();
     else wordDialog.removeAttribute("open");
+    currentDialogWordId = null;
     if (lastFocusedElement && typeof lastFocusedElement.focus === "function") lastFocusedElement.focus();
   }
 
   function openConfirm(message, callback) {
     confirmMessage.textContent = message;
     confirmCallback = callback;
+    confirmFocusedElement = document.activeElement;
     if (typeof confirmDialog.showModal === "function") confirmDialog.showModal();
     else confirmDialog.setAttribute("open", "");
+    window.requestAnimationFrame(() => {
+      confirmDialog.querySelector('[data-action="cancel-confirm"]')?.focus({ preventScroll: true });
+    });
   }
 
   function closeConfirm() {
     if (confirmDialog.open && typeof confirmDialog.close === "function") confirmDialog.close();
     else confirmDialog.removeAttribute("open");
     confirmCallback = null;
+    window.requestAnimationFrame(restoreConfirmFocus);
+  }
+
+  function restoreConfirmFocus() {
+    if (confirmFocusedElement && typeof confirmFocusedElement.focus === "function") {
+      confirmFocusedElement.focus({ preventScroll: true });
+    }
+    confirmFocusedElement = null;
   }
 
   function setDailyNew(value) {
@@ -1581,7 +1858,13 @@
     if (!Core.DAILY_OPTIONS.includes(daily)) return;
     state.settings.dailyNew = daily;
     saveState();
-    renderSettings();
+    document.querySelectorAll('[data-action="set-daily"]').forEach((button) => {
+      const selected = button.dataset.daily === String(daily);
+      button.classList.toggle("is-active", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+    const estimate = document.getElementById("daily-estimate");
+    if (estimate) estimate.textContent = `按当前每日 ${daily} 词估算`;
   }
 
   function setAccent(accent) {
@@ -1592,7 +1875,24 @@
     );
     state.settings.voiceURI = matching?.voiceURI || "";
     saveState();
-    renderSettings();
+    document.querySelectorAll('[data-action="set-accent"]').forEach((button) => {
+      const selected = button.dataset.accent === accent;
+      button.classList.toggle("is-active", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+    const voiceSelect = document.querySelector('[data-setting="voiceURI"]');
+    if (voiceSelect) voiceSelect.value = state.settings.voiceURI;
+  }
+
+  function updateExamSettingsSummary() {
+    const target = document.getElementById("exam-settings-summary");
+    if (!target) return;
+    const info = examInfo();
+    target.textContent = info
+      ? info.past
+        ? "考试日期已过，可以继续使用复习系统。"
+        : `距考试 ${info.days} 天，首轮还剩 ${info.unseen} 个词。`
+      : "设置日期后，首页显示倒计时与每日所需进度。";
   }
 
   function updateSetting(name, value) {
@@ -1661,16 +1961,22 @@
     });
   }
 
-  function handleAction(element) {
+  function handleAction(element, event) {
     const action = element.dataset.action;
     if (!action) return;
     if (action === "start-session") startSession(false);
     if (action === "start-review") startSession(true);
+    if (action === "focus-main") focusMainContent();
     if (action === "resume-session") navigate("session");
     if (action === "exit-session") navigate("today");
     if (action === "open-summary") navigate(state.lastSummary ? "summary" : "today");
     if (action === "speak-word") {
-      speakWordById(element.dataset.wordId, element.dataset.sentence === "true" ? "sentence" : "word");
+      speakWordById(
+        element.dataset.wordId,
+        element.dataset.sentence === "true" ? "sentence" : "word",
+        false,
+        element,
+      );
     }
     if (action === "start-card-spelling") startCardSpelling();
     if (action === "next-card") nextCard();
@@ -1685,6 +1991,7 @@
       updateLibraryRows();
     }
     if (action === "library-page") {
+      const keyboardActivated = event?.detail === 0;
       libraryPage = Math.max(1, Number(element.dataset.page) || 1);
       updateLibraryRows();
       const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1692,6 +1999,9 @@
         block: "start",
         behavior: reducedMotion ? "auto" : "smooth",
       });
+      if (keyboardActivated) {
+        window.requestAnimationFrame(() => document.querySelector(".word-row-word")?.focus());
+      }
     }
     if (action === "open-word") openWordDialog(element.dataset.wordId);
     if (action === "close-word-dialog") closeWordDialog();
@@ -1706,9 +2016,25 @@
     if (action === "toggle-autoplay") {
       state.settings.autoPlay = !state.settings.autoPlay;
       saveState();
-      renderSettings();
+      element.classList.toggle("is-on", state.settings.autoPlay);
+      element.setAttribute("aria-pressed", String(state.settings.autoPlay));
     }
-    if (action === "test-voice") speakText("Language learning takes consistent practice.", state.settings.accent);
+    if (action === "toggle-sound-effects") {
+      state.settings.soundEffects = !state.settings.soundEffects;
+      saveState();
+      element.classList.toggle("is-on", state.settings.soundEffects);
+      element.setAttribute("aria-pressed", String(state.settings.soundEffects));
+      if (state.settings.soundEffects) playSpellingSound(true);
+    }
+    if (action === "test-voice") {
+      speakText(
+        "Language learning takes consistent practice.",
+        state.settings.accent,
+        null,
+        "sentence",
+        element,
+      );
+    }
     if (action === "export-backup") exportBackup();
     if (action === "import-backup") document.getElementById("backup-file")?.click();
     if (action === "reset-progress") resetProgress();
@@ -1716,7 +2042,7 @@
 
   document.addEventListener("click", (event) => {
     const actionElement = event.target.closest("[data-action]");
-    if (actionElement) handleAction(actionElement);
+    if (actionElement) handleAction(actionElement, event);
     if (event.target === wordDialog) closeWordDialog();
     if (event.target === confirmDialog) closeConfirm();
   });
@@ -1729,6 +2055,14 @@
   });
 
   viewRoot.addEventListener("input", (event) => {
+    if (event.target.id === "card-spelling-answer") {
+      handleCardSpellingInput(event.target);
+      return;
+    }
+    if (event.target.id === "spelling-answer") {
+      handleQuizSpellingInput(event.target);
+      return;
+    }
     if (event.target.id === "library-search") {
       libraryQuery = event.target.value;
       libraryPage = 1;
@@ -1746,7 +2080,7 @@
     const setting = event.target.dataset.setting;
     if (setting === "examDate") {
       updateSetting(setting, event.target.value);
-      renderSettings();
+      updateExamSettingsSummary();
     }
     if (setting === "rate") updateSetting(setting, event.target.value);
     if (setting === "voiceURI") updateSetting(setting, event.target.value);
@@ -1757,24 +2091,129 @@
     }
   });
 
-  viewRoot.addEventListener("submit", (event) => {
-    if (event.target.matches("[data-card-spelling-form]")) {
+  document.addEventListener("keydown", (event) => {
+    if (wordDialog.open && event.code === "Space" && !event.altKey && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
-      const form = new FormData(event.target);
-      submitCardSpelling(form.get("answer"));
+      if (event.repeat || !currentDialogWordId) return;
+      const kind = event.shiftKey ? "sentence" : "word";
+      const button = wordDialog.querySelector(`[data-audio-kind="${kind}"]`);
+      speakWordById(currentDialogWordId, kind, false, button);
       return;
     }
-    if (event.target.matches("[data-spelling-form]")) {
+    if (currentRoute !== "session" || !state.activeSession) return;
+    const session = state.activeSession;
+    const quizItem = session.phase === "quiz" ? session.quiz[session.quizIndex] : null;
+    const options = [...viewRoot.querySelectorAll(".quiz-option:not(:disabled)")];
+    const isQuizArrow = ["ArrowUp", "ArrowDown"].includes(event.key);
+    const isQuizBoundary =
+      options.length > 0 && ["Home", "End"].includes(event.key);
+    if (session.phase === "quiz" && (isQuizArrow || isQuizBoundary)) {
       event.preventDefault();
-      const form = new FormData(event.target);
-      answerSpelling(form.get("answer"));
+      if (!options.length) return;
+      const focusedOption = document.activeElement?.closest?.(".quiz-option");
+      const current = focusedOption ? options.indexOf(focusedOption) : -1;
+      let next = ["ArrowUp", "End"].includes(event.key) ? options.length - 1 : 0;
+      if (current >= 0) {
+        if (event.key === "ArrowDown") next = (current + 1) % options.length;
+        if (event.key === "ArrowUp") next = (current - 1 + options.length) % options.length;
+        if (event.key === "Home") next = 0;
+        if (event.key === "End") next = options.length - 1;
+      }
+      options[next].focus({ preventScroll: false });
+      return;
+    }
+    if (event.code === "Space" && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      if (event.repeat) return;
+      const wordId = currentSessionWordId(session);
+      if (wordId) speakWordById(wordId, event.shiftKey ? "sentence" : "word");
+      return;
+    }
+    if (event.key !== "Enter" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const focused = document.activeElement;
+    if (focused?.matches("button, a, input, select, textarea")) return;
+    if (session.phase === "quiz") {
+      if (quizItem?.answered) {
+        event.preventDefault();
+        nextQuizQuestion();
+      } else if (options.length) {
+        event.preventDefault();
+        options[0].focus();
+      } else if (quizItem?.type === "spelling") {
+        event.preventDefault();
+        document.getElementById("spelling-answer")?.focus();
+      }
+      return;
+    }
+    if (["review", "learn"].includes(session.phase)) {
+      if (session.cardResult) {
+        event.preventDefault();
+        nextCard();
+      } else if (session.cardMode === "intro") {
+        event.preventDefault();
+        startCardSpelling();
+      }
+    } else if (session.phase === "quiz" && session.quiz[session.quizIndex]?.answered) {
+      event.preventDefault();
+      nextQuizQuestion();
     }
   });
 
+  function clearPressedButtons() {
+    document.querySelectorAll("button.is-pressed, a.button.is-pressed").forEach((button) => {
+      button.classList.remove("is-pressed");
+    });
+  }
+
+  let keyboardPressedButton = null;
+
+  document.addEventListener("pointerdown", (event) => {
+    const button = event.target.closest("button, a.button");
+    if (!button || button.disabled) return;
+    button.classList.add("is-pressed");
+  });
+
+  window.addEventListener("pointerup", clearPressedButtons);
+  window.addEventListener("pointercancel", clearPressedButtons);
+  window.addEventListener("blur", () => {
+    keyboardPressedButton = null;
+    clearPressedButtons();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.repeat || (event.key !== "Enter" && event.code !== "Space")) return;
+    const button = event.target.closest("button, a.button");
+    if (!button || button.disabled) return;
+    if (event.defaultPrevented) {
+      if (button.dataset.audioKind) button.classList.add("is-pressed");
+      return;
+    }
+    event.preventDefault();
+    button.classList.add("is-pressed");
+    keyboardPressedButton = button;
+  });
+
+  document.addEventListener("keyup", (event) => {
+    if (event.key !== "Enter" && event.code !== "Space") return;
+    const button = keyboardPressedButton;
+    keyboardPressedButton = null;
+    clearPressedButtons();
+    if (button && button.isConnected && !button.disabled) button.click();
+  });
+  document.addEventListener("focusout", (event) => {
+    event.target.closest?.("button, a.button")?.classList.remove("is-pressed");
+  });
+
   wordDialog.addEventListener("close", () => {
+    currentDialogWordId = null;
     if (lastFocusedElement && typeof lastFocusedElement.focus === "function") lastFocusedElement.focus();
   });
   confirmDialog.addEventListener("cancel", () => {
     confirmCallback = null;
+    window.setTimeout(restoreConfirmFocus, 0);
+  });
+  confirmDialog.addEventListener("close", () => {
+    confirmCallback = null;
+    restoreConfirmFocus();
   });
 })();

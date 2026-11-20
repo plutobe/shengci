@@ -93,6 +93,7 @@ test("imported state is normalized to supported settings and word ids", () => {
   assert.equal(normalized.settings.dailyNew, 10);
   assert.equal(normalized.settings.accent, "en-US");
   assert.equal(normalized.settings.rate, 1.2);
+  assert.equal(normalized.settings.soundEffects, true);
   assert.equal(normalized.course.round, 10);
   assert.equal(normalized.course.cursor, 414);
   assert.equal(normalized.cards[1].stage, 5);
@@ -103,7 +104,7 @@ test("imported state is normalized to supported settings and word ids", () => {
   assert.equal(normalized.lastSummary.reviewCount, 0);
 });
 
-test("legacy active sessions start reviews in spelling mode and keep card results", () => {
+test("legacy active sessions start with learning context and keep card results", () => {
   const normalized = Core.normalizeState(
     {
       activeSession: {
@@ -121,7 +122,7 @@ test("legacy active sessions start reviews in spelling mode and keep card result
     },
     { now: "2026-11-20", totalWords: 414, totalRounds: 10 },
   );
-  assert.equal(normalized.activeSession.cardMode, "spelling");
+  assert.equal(normalized.activeSession.cardMode, "intro");
   assert.equal(normalized.activeSession.cardResult.correct, false);
   assert.equal(normalized.activeSession.cardResult.answer, "abandn");
   assert.equal(normalized.activeSession.answers[0].cardIndex, 0);

@@ -19,6 +19,7 @@
     rate: 0.9,
     voiceURI: "",
     autoPlay: true,
+    soundEffects: true,
   };
 
   function pad(value) {
@@ -147,13 +148,12 @@
             selectedIndex: Number.isInteger(item.selectedIndex) ? item.selectedIndex : null,
             answered: Boolean(item.answered),
             correct: Boolean(item.correct),
+            answer: typeof item.answer === "string" ? item.answer.slice(0, 80) : "",
           }))
       : [];
     const cardMode = ["intro", "spelling"].includes(session.cardMode)
       ? session.cardMode
-      : phase === "review"
-        ? "spelling"
-        : "intro";
+      : "intro";
     const cardResult =
       session.cardResult &&
       Number.isInteger(Number(session.cardResult.wordId)) &&
@@ -238,6 +238,7 @@
         rate: clamp(Number(settings.rate) || DEFAULT_SETTINGS.rate, 0.6, 1.2),
         voiceURI: typeof settings.voiceURI === "string" ? settings.voiceURI : "",
         autoPlay: settings.autoPlay !== false,
+        soundEffects: settings.soundEffects !== false,
       },
       course: {
         round: clamp(
